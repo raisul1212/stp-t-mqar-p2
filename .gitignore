@@ -1,0 +1,20 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+
+# Results and checkpoints (generated, not committed)
+results/runs/*.json
+results/summary.csv
+results/per_kv.csv
+checkpoints/
+
+# Archives
+*.tar.gz
+
+# Wandb
+wandb/
+
+# Editor
+.DS_Store
+*.swp

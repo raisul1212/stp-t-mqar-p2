@@ -1,0 +1,99 @@
+# STP-T MQAR Phase 2 — Run Configuration
+# =========================================
+# Edit this file to change the sweep. No Python changes needed.
+#
+# Columns:
+#   enabled     : 1 = run, 0 = skip (row stays in file for reference)
+#   model       : attention | based | retnet | gla | stp_light | stp_t
+#   d_model     : model width
+#   num_heads   : attention heads (dk = d_model / num_heads)
+#   n_layers    : transformer depth
+#   lr          : learning rate
+#   max_epochs  : training epochs
+#   batch_size  : TRAIN batch size (test batch = batch_size // 8 automatically)
+#   gamma_init  : STP only — initial gamma (retention strength). Ignored for baselines.
+#   lambda_init : STP only — initial lambda (forgetting rate). Ignored for baselines.
+#   run_id      : unique ID used as results filename and WandB run name
+#
+# OOM note: d=256 requires ~32–64 GB GPU at batch_size=64. Reduce to 32 on 24 GB cards.
+# See RUNSHEET.md for one-liner commands to bulk-edit any column.
+#
+enabled,model,d_model,num_heads,n_layers,lr,max_epochs,batch_size,gamma_init,lambda_init,run_id
+# ── Attention (softmax baseline) ──
+1,attention,64,2,2,1e-3,32,256,0.9,0.1,attention-d64-lr1.0e-03
+1,attention,64,2,2,3e-3,32,256,0.9,0.1,attention-d64-lr3.0e-03
+1,attention,64,2,2,1e-2,32,256,0.9,0.1,attention-d64-lr1.0e-02
+1,attention,64,2,2,3e-2,32,256,0.9,0.1,attention-d64-lr3.0e-02
+1,attention,128,2,2,1e-3,32,256,0.9,0.1,attention-d128-lr1.0e-03
+1,attention,128,2,2,3e-3,32,256,0.9,0.1,attention-d128-lr3.0e-03
+1,attention,128,2,2,1e-2,32,256,0.9,0.1,attention-d128-lr1.0e-02
+1,attention,128,2,2,3e-2,32,256,0.9,0.1,attention-d128-lr3.0e-02
+1,attention,256,2,2,1e-3,32,64,0.9,0.1,attention-d256-lr1.0e-03
+1,attention,256,2,2,3e-3,32,64,0.9,0.1,attention-d256-lr3.0e-03
+1,attention,256,2,2,1e-2,32,64,0.9,0.1,attention-d256-lr1.0e-02
+1,attention,256,2,2,3e-2,32,64,0.9,0.1,attention-d256-lr3.0e-02
+# ── Based ──
+1,based,64,2,2,1e-3,32,256,0.9,0.1,based-d64-lr1.0e-03
+1,based,64,2,2,3e-3,32,256,0.9,0.1,based-d64-lr3.0e-03
+1,based,64,2,2,1e-2,32,256,0.9,0.1,based-d64-lr1.0e-02
+1,based,64,2,2,3e-2,32,256,0.9,0.1,based-d64-lr3.0e-02
+1,based,128,2,2,1e-3,32,256,0.9,0.1,based-d128-lr1.0e-03
+1,based,128,2,2,3e-3,32,256,0.9,0.1,based-d128-lr3.0e-03
+1,based,128,2,2,1e-2,32,256,0.9,0.1,based-d128-lr1.0e-02
+1,based,128,2,2,3e-2,32,256,0.9,0.1,based-d128-lr3.0e-02
+1,based,256,2,2,1e-3,32,64,0.9,0.1,based-d256-lr1.0e-03
+1,based,256,2,2,3e-3,32,64,0.9,0.1,based-d256-lr3.0e-03
+1,based,256,2,2,1e-2,32,64,0.9,0.1,based-d256-lr1.0e-02
+1,based,256,2,2,3e-2,32,64,0.9,0.1,based-d256-lr3.0e-02
+# ── RetNet (fla) ──
+1,retnet,64,2,2,1e-3,32,256,0.9,0.1,retnet-d64-lr1.0e-03
+1,retnet,64,2,2,3e-3,32,256,0.9,0.1,retnet-d64-lr3.0e-03
+1,retnet,64,2,2,1e-2,32,256,0.9,0.1,retnet-d64-lr1.0e-02
+1,retnet,64,2,2,3e-2,32,256,0.9,0.1,retnet-d64-lr3.0e-02
+1,retnet,128,2,2,1e-3,32,256,0.9,0.1,retnet-d128-lr1.0e-03
+1,retnet,128,2,2,3e-3,32,256,0.9,0.1,retnet-d128-lr3.0e-03
+1,retnet,128,2,2,1e-2,32,256,0.9,0.1,retnet-d128-lr1.0e-02
+1,retnet,128,2,2,3e-2,32,256,0.9,0.1,retnet-d128-lr3.0e-02
+1,retnet,256,2,2,1e-3,32,64,0.9,0.1,retnet-d256-lr1.0e-03
+1,retnet,256,2,2,3e-3,32,64,0.9,0.1,retnet-d256-lr3.0e-03
+1,retnet,256,2,2,1e-2,32,64,0.9,0.1,retnet-d256-lr1.0e-02
+1,retnet,256,2,2,3e-2,32,64,0.9,0.1,retnet-d256-lr3.0e-02
+# ── GLA (fla) ──
+1,gla,64,2,2,1e-3,32,256,0.9,0.1,gla-d64-lr1.0e-03
+1,gla,64,2,2,3e-3,32,256,0.9,0.1,gla-d64-lr3.0e-03
+1,gla,64,2,2,1e-2,32,256,0.9,0.1,gla-d64-lr1.0e-02
+1,gla,64,2,2,3e-2,32,256,0.9,0.1,gla-d64-lr3.0e-02
+1,gla,128,2,2,1e-3,32,256,0.9,0.1,gla-d128-lr1.0e-03
+1,gla,128,2,2,3e-3,32,256,0.9,0.1,gla-d128-lr3.0e-03
+1,gla,128,2,2,1e-2,32,256,0.9,0.1,gla-d128-lr1.0e-02
+1,gla,128,2,2,3e-2,32,256,0.9,0.1,gla-d128-lr3.0e-02
+1,gla,256,2,2,1e-3,32,64,0.9,0.1,gla-d256-lr1.0e-03
+1,gla,256,2,2,3e-3,32,64,0.9,0.1,gla-d256-lr3.0e-03
+1,gla,256,2,2,1e-2,32,64,0.9,0.1,gla-d256-lr1.0e-02
+1,gla,256,2,2,3e-2,32,64,0.9,0.1,gla-d256-lr3.0e-02
+# ── STP-T-Light (this work) ──
+1,stp_light,64,2,2,1e-3,32,256,0.9,0.1,stp_light-d64-lr1.0e-03
+1,stp_light,64,2,2,3e-3,32,256,0.9,0.1,stp_light-d64-lr3.0e-03
+1,stp_light,64,2,2,1e-2,32,256,0.9,0.1,stp_light-d64-lr1.0e-02
+1,stp_light,64,2,2,3e-2,32,256,0.9,0.1,stp_light-d64-lr3.0e-02
+1,stp_light,128,2,2,1e-3,32,256,0.9,0.1,stp_light-d128-lr1.0e-03
+1,stp_light,128,2,2,3e-3,32,256,0.9,0.1,stp_light-d128-lr3.0e-03
+1,stp_light,128,2,2,1e-2,32,256,0.9,0.1,stp_light-d128-lr1.0e-02
+1,stp_light,128,2,2,3e-2,32,256,0.9,0.1,stp_light-d128-lr3.0e-02
+1,stp_light,256,2,2,1e-3,32,64,0.9,0.1,stp_light-d256-lr1.0e-03
+1,stp_light,256,2,2,3e-3,32,64,0.9,0.1,stp_light-d256-lr3.0e-03
+1,stp_light,256,2,2,1e-2,32,64,0.9,0.1,stp_light-d256-lr1.0e-02
+1,stp_light,256,2,2,3e-2,32,64,0.9,0.1,stp_light-d256-lr3.0e-02
+# ── STP-T (this work) ──
+1,stp_t,64,2,2,1e-3,32,256,0.9,0.1,stp_t-d64-lr1.0e-03
+1,stp_t,64,2,2,3e-3,32,256,0.9,0.1,stp_t-d64-lr3.0e-03
+1,stp_t,64,2,2,1e-2,32,256,0.9,0.1,stp_t-d64-lr1.0e-02
+1,stp_t,64,2,2,3e-2,32,256,0.9,0.1,stp_t-d64-lr3.0e-02
+1,stp_t,128,2,2,1e-3,32,256,0.9,0.1,stp_t-d128-lr1.0e-03
+1,stp_t,128,2,2,3e-3,32,256,0.9,0.1,stp_t-d128-lr3.0e-03
+1,stp_t,128,2,2,1e-2,32,256,0.9,0.1,stp_t-d128-lr1.0e-02
+1,stp_t,128,2,2,3e-2,32,256,0.9,0.1,stp_t-d128-lr3.0e-02
+1,stp_t,256,2,2,1e-3,32,64,0.9,0.1,stp_t-d256-lr1.0e-03
+1,stp_t,256,2,2,3e-3,32,64,0.9,0.1,stp_t-d256-lr3.0e-03
+1,stp_t,256,2,2,1e-2,32,64,0.9,0.1,stp_t-d256-lr1.0e-02
+1,stp_t,256,2,2,3e-2,32,64,0.9,0.1,stp_t-d256-lr3.0e-02
