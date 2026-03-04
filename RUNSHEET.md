@@ -1,280 +1,256 @@
 # RUNSHEET: STP-T MQAR Phase 2
 
-Step-by-step deployment guide.  
+Step-by-step deployment guide.
 RISE Lab, Purdue University | March 2026
 
 ---
 
-## Requirements
+## Platform Support
 
-- 1× GPU ≥ 24 GB VRAM (A100 40 GB recommended; RTX 4090 24 GB works with `batch_size=32` for d=256)
-- Linux + CUDA drivers, `nvidia-smi` working
-- ~15 GB disk for packages, data cache, checkpoints
+| Platform | Notes |
+|----------|-------|
+| Thunder Compute (A100 80GB) | Primary dev platform — use home dir |
+| RunPod (A100 40/80GB) | Use /workspace |
+| Lambda Labs | Use Base template |
+| Vast.ai | Filter hosts ≥95% reliability |
+| Purdue Anvil | See Purdue section below |
+| Purdue Gilbreth | See Purdue section below |
 
 ---
 
-## Steps
+## Cloud GPU Pods (Thunder / RunPod / Lambda / Vast.ai)
 
 ### 1. Start GPU instance
 
-Any cloud provider (RunPod, Lambda, Vast.ai) with a PyTorch template.  
-Verify GPU: `nvidia-smi`
+Minimum: 1× GPU ≥24 GB VRAM. A100 80GB recommended. Verify: `nvidia-smi`
 
-### 2. Clone repo
+### 2. Open a persistent session
 
 ```bash
+sudo apt-get update && sudo apt-get install -y tmux
+tmux new -s stp
+# Detach: Ctrl+B then D | Reconnect: tmux attach -t stp
+```
+
+### 3. Clone and setup
+
+```bash
+# Thunder Compute (home dir)
+cd ~
+git clone https://github.com/raisul1212/stp-t-mqar-p2.git
+cd stp-t-mqar-p2
+bash scripts/setup.sh 2>&1 | tee ~/setup_log.txt
+
+# RunPod / Lambda (/workspace)
 cd /workspace
 git clone https://github.com/raisul1212/stp-t-mqar-p2.git
+cd stp-t-mqar-p2
+bash scripts/setup.sh 2>&1 | tee /workspace/setup_log.txt
 ```
 
-### 3. Run setup (once per pod)
+setup.sh auto-detects workspace from its own location. No env vars needed.
+Wait for **ALL CHECKS PASSED** before proceeding.
+
+### 4. Run the benchmark
 
 ```bash
-bash /workspace/stp-t-mqar-p2/scripts/setup.sh
-```
+export WORKSPACE=~            # Thunder — adjust for your platform
+# export WORKSPACE=/workspace # RunPod/Lambda
 
-What setup does automatically:
-- Verifies GPU, records PyTorch version (never modified)
-- Installs: einops, wandb, pyyaml, pandas, tqdm, scipy, opt-einsum
-- Installs flash-linear-attention + fla-core with `--no-deps` (protects pod's PyTorch)
-- Handles the fla BitNet `AutoConfig.register` conflict if it appears
-- Clones and installs Zoology with `--no-deps`
-- **Patches Zoology `model.py`**: `return_embeddings=False` (without this all models plateau at ~25%)
-- **Patches Zoology `config.py`**: pydantic v2 `LoggerConfig` (`Optional[str] = None`)
-- **Patches fla wrappers**: removes `head_first=False` (fla ≥ 0.4.1 dropped it)
-- Registers `mixers/` on `sys.path` so `stp_v3` and `fla_wrappers` are importable
-- Installs `stp_train.py` (adds checkpoint saving + per-run JSON + best-epoch tracking)
-- Runs full verification: imports, GPU forward passes, logits shape, patch checks
-
-If setup prints `ALL CHECKS PASSED`, proceed.
-
----
-
-## Running the Benchmark
-
-All runs are controlled by **`configs/run_configs.csv`**.  
-Open a tmux session first:
-
-```bash
-tmux new -s stp
-```
-
-### Option A — Direct launch (recommended)
-
-```bash
-cd /workspace/zoology
 export WANDB_MODE=offline
-export STP_RESULTS_DIR=/workspace/results
-export STP_CHECKPOINT_DIR=/workspace/checkpoints
+export RUN_CONFIG=${WORKSPACE}/stp-t-mqar-p2/configs/run_configs.csv
+export STP_RESULTS_DIR=${WORKSPACE}/results
+export STP_CHECKPOINT_DIR=${WORKSPACE}/checkpoints
 export STP_SAVE_CHECKPOINTS=best
-export RUN_CONFIG=/workspace/stp-t-mqar-p2/configs/run_configs.csv
 
-# STP models only (~8–12 h)
+cd ${WORKSPACE}/zoology
+
+# STP models only (~8-12 h)
 STP_MODELS=stp_light,stp_t \
-  python3 -m zoology.launch /workspace/stp-t-mqar-p2/configs/mqar_p2.py \
-  2>&1 | tee /workspace/experiment_log.txt
+  python3 -m zoology.launch ${WORKSPACE}/stp-t-mqar-p2/configs/mqar_p2.py \
+  2>&1 | tee ${WORKSPACE}/experiment_log.txt
 
-# STP vs direct competitors (~16–20 h)
+# STP + baselines (~16-20 h)
 STP_MODELS=stp_light,stp_t,retnet,gla \
-  python3 -m zoology.launch /workspace/stp-t-mqar-p2/configs/mqar_p2.py \
-  2>&1 | tee /workspace/experiment_log.txt
+  python3 -m zoology.launch ${WORKSPACE}/stp-t-mqar-p2/configs/mqar_p2.py \
+  2>&1 | tee ${WORKSPACE}/experiment_log.txt
 
-# Everything in CSV — 72 runs (~20–40 h)
-python3 -m zoology.launch /workspace/stp-t-mqar-p2/configs/mqar_p2.py \
-  2>&1 | tee /workspace/experiment_log.txt
-```
-
-Available `STP_MODELS` values: `attention`, `based`, `retnet`, `gla`, `stp_light`, `stp_t`
-
-Detach tmux: `Ctrl+B`, then `D`  
-Reconnect: `tmux attach -t stp`
-
-### Option B — Custom CSV
-
-```bash
-cp /workspace/stp-t-mqar-p2/configs/run_configs.csv \
-   /workspace/stp-t-mqar-p2/configs/ablation.csv
-# edit ablation.csv, then:
-RUN_CONFIG=/workspace/stp-t-mqar-p2/configs/ablation.csv \
-  STP_MODELS=stp_t \
-  python3 -m zoology.launch /workspace/stp-t-mqar-p2/configs/mqar_p2.py \
-  2>&1 | tee /workspace/experiment_log.txt
+# Full sweep - 72 runs (~20-40 h)
+python3 -m zoology.launch ${WORKSPACE}/stp-t-mqar-p2/configs/mqar_p2.py \
+  2>&1 | tee ${WORKSPACE}/experiment_log.txt
 ```
 
 ---
 
-## Editing run_configs.csv
+## Purdue Clusters (Anvil / Gilbreth)
 
-`configs/run_configs.csv` is the single source of truth for every run.  
-Edit it before launching — no Python changes needed.
+### 1. Login and request GPU node
+
+```bash
+ssh username@anvil.rcac.purdue.edu
+# or
+ssh username@gilbreth.rcac.purdue.edu
+
+# Interactive GPU session (adjust account/partition)
+salloc -A your_account -p gpu -N 1 --gpus-per-node=1 --time=48:00:00
+```
+
+### 2. Load modules
+
+```bash
+# Anvil
+module load anaconda cuda
+conda activate your_pytorch_env
+
+# Gilbreth
+module load anaconda/2020.11-py38 cuda/11.4.0
+conda activate your_pytorch_env
+
+# Verify
+python3 -c "import torch; print(torch.__version__, torch.cuda.is_available())"
+```
+
+If you need to create a conda env with PyTorch:
+```bash
+conda create -n stp python=3.10 -y
+conda activate stp
+conda install pytorch torchvision torchaudio pytorch-cuda=12.1 -c pytorch -c nvidia -y
+```
+
+### 3. Clone and setup
+
+```bash
+cd $SCRATCH
+git clone https://github.com/raisul1212/stp-t-mqar-p2.git
+cd stp-t-mqar-p2
+bash scripts/setup.sh 2>&1 | tee ~/setup_log.txt
+```
+
+setup.sh auto-detects Purdue from hostname (anvil/gilbreth/purdue) and adjusts:
+- Skips apt-get (no sudo on cluster)
+- Uses --user pip installs if outside conda
+- Falls back to user site-packages for .pth registration
+- Shows screen as tmux alternative
+
+### 4. Persistent session
+
+```bash
+# tmux (on login node)
+tmux new -s stp
+
+# screen (always available)
+screen -S stp
+# Detach: Ctrl+A then D | Reconnect: screen -r stp
+```
+
+### 5. Run the benchmark
+
+```bash
+export WORKSPACE=$SCRATCH/stp-workspace
+mkdir -p $WORKSPACE
+
+export WANDB_MODE=offline
+export RUN_CONFIG=$SCRATCH/stp-t-mqar-p2/configs/run_configs.csv
+export STP_RESULTS_DIR=$WORKSPACE/results
+export STP_CHECKPOINT_DIR=$WORKSPACE/checkpoints
+
+cd $SCRATCH/zoology
+STP_MODELS=stp_light,stp_t \
+  python3 -m zoology.launch $SCRATCH/stp-t-mqar-p2/configs/mqar_p2.py \
+  2>&1 | tee $WORKSPACE/experiment_log.txt
+```
+
+### 6. SLURM batch job
+
+```bash
+cat > run_stp.sh << 'EOF'
+#!/bin/bash
+#SBATCH -A your_account
+#SBATCH -p gpu
+#SBATCH -N 1
+#SBATCH --gpus-per-node=1
+#SBATCH --time=48:00:00
+#SBATCH -o stp_%j.log
+#SBATCH -e stp_%j.err
+#SBATCH --job-name=stp_mqar
+
+module load anaconda cuda
+conda activate your_pytorch_env
+
+export WORKSPACE=$SCRATCH/stp-workspace
+export WANDB_MODE=offline
+export RUN_CONFIG=$SCRATCH/stp-t-mqar-p2/configs/run_configs.csv
+export STP_RESULTS_DIR=$WORKSPACE/results
+export STP_CHECKPOINT_DIR=$WORKSPACE/checkpoints
+
+cd $SCRATCH/zoology
+python3 -m zoology.launch $SCRATCH/stp-t-mqar-p2/configs/mqar_p2.py \
+  2>&1 | tee $WORKSPACE/experiment_log.txt
+EOF
+
+sbatch run_stp.sh
+squeue -u $USER    # monitor
+scancel <job_id>   # cancel
+```
+
+---
+
+## Configuration (all platforms)
+
+All run parameters live in `configs/run_configs.csv` — no Python edits needed.
 
 ### CSV columns
 
 | Column | Description |
 |--------|-------------|
-| `enabled` | `1` = include, `0` = skip (row stays in file for reference) |
-| `model` | `attention` \| `based` \| `retnet` \| `gla` \| `stp_light` \| `stp_t` |
+| `enabled` | `1` = run, `0` = skip |
+| `model` | `attention` / `based` / `retnet` / `gla` / `stp_light` / `stp_t` |
 | `d_model` | Model width |
-| `num_heads` | Attention heads (`dk = d_model / num_heads`) |
-| `n_layers` | Transformer depth |
+| `num_heads` | Attention heads |
+| `n_layers` | Depth |
 | `lr` | Learning rate |
 | `max_epochs` | Training epochs |
-| `batch_size` | **Train** batch size. Test batch = `batch_size // 8` automatically |
-| `gamma_init` | STP only — initial γ (retention strength). Ignored for baselines. |
-| `lambda_init` | STP only — initial λ (forgetting rate). Ignored for baselines. |
-| `run_id` | Unique ID used as results filename and WandB run name |
+| `batch_size` | Train batch (d=256 defaults to 64 to avoid OOM) |
+| `gamma_init` | STP only — initial gamma |
+| `lambda_init` | STP only — initial lambda |
+| `run_id` | Unique ID for results file and WandB run name |
 
----
-
-### Disable / re-enable a model
+### Common CSV edits
 
 ```bash
-# Skip all attention rows (e.g. already have Phase 1 results)
-sed -i 's/^1,attention/0,attention/g' \
-  /workspace/stp-t-mqar-p2/configs/run_configs.csv
+# Disable a model
+sed -i 's/^1,attention/0,attention/g' configs/run_configs.csv
 
 # Re-enable
-sed -i 's/^0,attention/1,attention/g' \
-  /workspace/stp-t-mqar-p2/configs/run_configs.csv
-```
+sed -i 's/^0,attention/1,attention/g' configs/run_configs.csv
 
----
-
-### Reduce batch_size for OOM on small GPU (d=256 rows)
-
-Phase 1 OOM occurred at `batch_size=256`. Phase 2 defaults to `batch_size=64` for d=256.
-On a 24 GB GPU, reduce d=256 rows to 32:
-
-```bash
+# Reduce batch_size for d=256 (OOM on 24GB GPU)
 python3 -c "
-lines = open('/workspace/stp-t-mqar-p2/configs/run_configs.csv').readlines()
-out = []
-for line in lines:
-    if line.startswith('#') or line.startswith('enabled'):
-        out.append(line); continue
-    fields = line.rstrip().split(',')
-    if len(fields) > 7 and fields[2].strip() == '256':
-        fields[7] = '32'
-        line = ','.join(fields) + '\n'
-    out.append(line)
-open('/workspace/stp-t-mqar-p2/configs/run_configs.csv', 'w').writelines(out)
-print('Done — all d=256 rows now use batch_size=32')
-"
-```
-
-Revert to 64:
-
-```bash
-python3 -c "
-lines = open('/workspace/stp-t-mqar-p2/configs/run_configs.csv').readlines()
-out = []
-for line in lines:
-    if line.startswith('#') or line.startswith('enabled'):
-        out.append(line); continue
-    fields = line.rstrip().split(',')
-    if len(fields) > 7 and fields[2].strip() == '256' and fields[7].strip() == '32':
-        fields[7] = '64'
-        line = ','.join(fields) + '\n'
-    out.append(line)
-open('/workspace/stp-t-mqar-p2/configs/run_configs.csv', 'w').writelines(out)
-print('Done — all d=256 rows restored to batch_size=64')
-"
-```
-
----
-
-### Reduce max_epochs for a fast sanity check
-
-```bash
-python3 -c "
-import csv, io
-src = '/workspace/stp-t-mqar-p2/configs/run_configs.csv'
-lines = open(src).readlines()
-comments = [l for l in lines if l.lstrip().startswith('#')]
-data = [l for l in lines if not l.lstrip().startswith('#')]
-reader = csv.DictReader(data)
-rows = list(reader); fields = reader.fieldnames
-for r in rows: r['max_epochs'] = '8'
-out = io.StringIO()
-for c in comments: out.write(c)
-w = csv.DictWriter(out, fieldnames=fields)
-w.writeheader(); w.writerows(rows)
-open(src, 'w').write(out.getvalue())
-print(f'Done — {len(rows)} rows now use max_epochs=8')
-"
-```
-
----
-
-### Change STP hyperparameters (gamma_init / lambda_init)
-
-```bash
-python3 -c "
-import csv, io
-src = '/workspace/stp-t-mqar-p2/configs/run_configs.csv'
-lines = open(src).readlines()
-comments = [l for l in lines if l.lstrip().startswith('#')]
-data = [l for l in lines if not l.lstrip().startswith('#')]
-reader = csv.DictReader(data)
-rows = list(reader); fields = reader.fieldnames
-for r in rows:
-    if r['model'] in ('stp_t', 'stp_light'):
-        r['gamma_init']  = '0.95'
-        r['lambda_init'] = '0.05'
-out = io.StringIO()
-for c in comments: out.write(c)
-w = csv.DictWriter(out, fieldnames=fields)
-w.writeheader(); w.writerows(rows)
-open(src, 'w').write(out.getvalue())
+lines = open('configs/run_configs.csv').readlines(); out = []
+for l in lines:
+    f = l.rstrip().split(',')
+    if len(f) > 7 and f[2].strip() == '256': f[7] = '32'
+    out.append(','.join(f)+'\n' if len(f)>1 else l)
+open('configs/run_configs.csv','w').writelines(out)
 print('Done')
 "
-```
 
----
-
-### Add a learning rate to the sweep
-
-```bash
+# Reduce max_epochs for sanity check
 python3 -c "
 import csv, io
-src = '/workspace/stp-t-mqar-p2/configs/run_configs.csv'
+src = 'configs/run_configs.csv'
 lines = open(src).readlines()
 comments = [l for l in lines if l.lstrip().startswith('#')]
 data = [l for l in lines if not l.lstrip().startswith('#')]
-reader = csv.DictReader(data)
-rows = list(reader); fields = reader.fieldnames
-new_rows = []
-for r in rows:
-    if r['model'] == 'stp_t' and r['lr'].strip() == '1e-3':
-        nr = dict(r); nr['lr'] = '5e-4'
-        d = r['d_model'].strip()
-        nr['run_id'] = f'stp_t-d{d}-lr5.0e-04'
-        new_rows.append(nr)
-rows.extend(new_rows)
+reader = csv.DictReader(data); rows = list(reader); fields = reader.fieldnames
+for r in rows: r['max_epochs'] = '4'
 out = io.StringIO()
 for c in comments: out.write(c)
 w = csv.DictWriter(out, fieldnames=fields)
 w.writeheader(); w.writerows(rows)
-open(src, 'w').write(out.getvalue())
-print(f'Added {len(new_rows)} rows at lr=5e-4')
+open(src,'w').write(out.getvalue())
+print(f'Done — {len(rows)} rows now use max_epochs=4')
 "
-```
-
----
-
-### Dry-run: preview what configs will be built
-
-```bash
-cd /workspace/zoology
-RUN_CONFIG=/workspace/stp-t-mqar-p2/configs/run_configs.csv \
-STP_MODELS=stp_t \
-python3 -c "
-import sys; sys.argv=['']
-exec(open('/workspace/stp-t-mqar-p2/configs/mqar_p2.py').read())
-print(f'Total configs: {len(configs)}')
-for c in configs:
-    print(f'  {c.run_id}  lr={c.learning_rate}  d={c.model.d_model}  bs={c.data.batch_size[0]}')
-" 2>/dev/null
 ```
 
 ---
@@ -282,17 +258,10 @@ for c in configs:
 ## Monitoring
 
 ```bash
-# Live training progress
-tail -f /workspace/experiment_log.txt
-
-# GPU utilization
-watch -n 5 nvidia-smi
-
-# Completed runs so far
-ls /workspace/results/runs/ | wc -l
-
-# Inspect a single completed run
-python3 -m json.tool /workspace/results/runs/stp_t-d128-lr1.0e-03.json | head -40
+tail -f ${WORKSPACE}/experiment_log.txt   # live log
+watch -n 5 nvidia-smi                     # GPU util
+ls ${WORKSPACE}/results/runs/ | wc -l    # completed runs
+squeue -u $USER                           # Purdue job status
 ```
 
 ---
@@ -300,44 +269,27 @@ python3 -m json.tool /workspace/results/runs/stp_t-d128-lr1.0e-03.json | head -4
 ## Extracting Results
 
 ```bash
-python3 /workspace/stp-t-mqar-p2/scripts/collect_results.py \
-    --wandb-dir /workspace/zoology/wandb \
-    --out-dir   /workspace/results
+python3 stp-t-mqar-p2/scripts/collect_results.py \
+    --wandb-dir ${WORKSPACE}/zoology/wandb \
+    --out-dir   ${WORKSPACE}/results
 ```
 
-Outputs:
-```
-/workspace/results/
-├── summary.csv        ← one row per run, all metrics
-└── per_kv.csv         ← best LR per (model, d_model) with per-KV accuracy
-```
-
-For richer output (best-epoch tracking, per-run JSONs, comparison table), use
-`extract_results.py` from Phase 1 if available:
-
-```bash
-python3 /workspace/extract_results.py --output_dir /workspace/results
-```
+Outputs `results/summary.csv` and `results/per_kv.csv`.
 
 ---
 
-## Archive Before Stopping the Pod
+## Archive Before Stopping
 
 ```bash
 TIMESTAMP=$(date +%Y%m%d_%H%M)
-tar czf /workspace/stp_mqar_p2_${TIMESTAMP}.tar.gz \
-    -C /workspace \
-    results/ \
-    experiment_log.txt \
-    zoology/wandb/ \
-    stp-t-mqar-p2/ \
-    2>/dev/null
-echo "Archive: /workspace/stp_mqar_p2_${TIMESTAMP}.tar.gz"
+tar czf ~/stp_mqar_p2_${TIMESTAMP}.tar.gz \
+    ${WORKSPACE}/results/ \
+    ${WORKSPACE}/experiment_log.txt \
+    ~/stp-t-mqar-p2/ 2>/dev/null
 
-# Transfer
-scp -P <port> root@<pod-ip>:/workspace/stp_mqar_p2_*.tar.gz .
-# or
-runpodctl send /workspace/stp_mqar_p2_*.tar.gz
+# Transfer to local
+scp ubuntu@<ip>:~/stp_mqar_p2_*.tar.gz .           # cloud
+scp username@anvil.rcac.purdue.edu:~/stp_*.tar.gz . # Purdue
 ```
 
 ---
@@ -346,12 +298,14 @@ runpodctl send /workspace/stp_mqar_p2_*.tar.gz
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `STP_MODELS` | *(empty = all)* | Comma-separated model names to run |
-| `RUN_CONFIG` | `configs/run_configs.csv` | Path to CSV config file |
-| `WANDB_MODE` | *(unset)* | Set to `offline` on RunPod |
-| `STP_RESULTS_DIR` | `/workspace/results` | Per-run JSON output directory |
-| `STP_CHECKPOINT_DIR` | `/workspace/checkpoints` | Checkpoint `.pt` files |
-| `STP_SAVE_CHECKPOINTS` | `best` | `best` \| `all` \| `none` |
+| `WORKSPACE` | parent of repo | Override workspace location |
+| `PURDUE` | `0` | Set `1` to force cluster mode |
+| `STP_MODELS` | *(all)* | Comma-separated model filter |
+| `RUN_CONFIG` | `configs/run_configs.csv` | Path to CSV |
+| `WANDB_MODE` | *(unset)* | Set `offline` on pod/cluster |
+| `STP_RESULTS_DIR` | `${WORKSPACE}/results` | Per-run JSON output |
+| `STP_CHECKPOINT_DIR` | `${WORKSPACE}/checkpoints` | Checkpoint .pt files |
+| `STP_SAVE_CHECKPOINTS` | `best` | `best` / `all` / `none` |
 
 ---
 
@@ -359,23 +313,15 @@ runpodctl send /workspace/stp_mqar_p2_*.tar.gz
 
 | Problem | Fix |
 |---------|-----|
-| All accuracies ~25% | `grep return_embeddings /workspace/zoology/zoology/model.py` must show `False`. Rerun `setup.sh`. |
-| `No module named zoology` | `cd /workspace/zoology && pip install -e . --break-system-packages --no-deps` |
-| `No module named fla` | `pip install flash-linear-attention fla-core --break-system-packages --no-deps` |
-| `No module named stp_v3` | `setup.sh` adds a `.pth` file — rerun setup or: `export PYTHONPATH=/workspace/stp-t-mqar-p2/mixers:$PYTHONPATH` |
-| `No module named fla_wrappers` | Same as above |
-| `unexpected keyword head_first` | Rerun `setup.sh` — patches Zoology's fla wrappers |
-| `AutoConfig.register` BitNet error | Rerun `setup.sh` — patches fla's BitNet `__init__.py` |
-| pydantic validation error on `LoggerConfig` | Rerun `setup.sh` — patches `zoology/config.py` |
+| All accuracies ~25% | `grep return_embeddings zoology/zoology/model.py` must show `False`. Rerun setup. |
+| `No module named zoology` | `cd zoology && pip3 install -e . --no-deps` |
+| `No module named fla` | `pip3 install flash-linear-attention fla-core --no-deps` |
+| `No module named stp_v3` | Rerun setup or `export PYTHONPATH=~/stp-t-mqar-p2/mixers:$PYTHONPATH` |
+| `pip: command not found` | setup.sh auto-detects pip3/pip/python3 -m pip — rerun setup |
+| `apt-get: permission denied` | Expected on Purdue — setup.sh skips apt gracefully |
+| `tmux not found` | `sudo apt-get install tmux` (cloud) or use `screen` (Purdue) |
 | OOM at d=256 | Reduce batch_size to 32 for d=256 rows (command above) |
-| `run_configs.csv not found` | Set `RUN_CONFIG=/workspace/stp-t-mqar-p2/configs/run_configs.csv` |
-| `STP_MODELS filter → 0 configs` | Typo in model name. Valid: `attention`, `based`, `retnet`, `gla`, `stp_light`, `stp_t` |
-| fla returns tuple, Zoology crashes | Already handled by `fla_wrappers.py` (`output, *_ = self.retnet(x)`) |
-
----
-
-## Performance Notes
-
-- **STP recurrence**: `STPTLight` and `STPT` use a token-by-token Python loop (`for t in range(T)`). Plan ~3–4× longer wall time vs RetNet/GLA (which use Triton kernels via fla). Expected and known.
-- **fla first-run compile**: Triton kernels compile on first use per `d_model`. Expect 2–5 min overhead at the start of the first run for each new `d_model`. Cached thereafter.
-- **Data cache**: Zoology caches MQAR datasets in `/workspace/zoology_cache/`. First run generates; all subsequent load instantly.
+| `head_first` kwarg crash | Rerun setup — patches Zoology fla wrappers |
+| pydantic validation error | Rerun setup — patches zoology/config.py |
+| Purdue: site-packages write error | setup.sh falls back to user site-packages automatically |
+| Purdue: module not found | `module load anaconda cuda` then `conda activate your_env` first |

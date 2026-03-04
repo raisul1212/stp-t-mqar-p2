@@ -3,29 +3,59 @@
 # setup.sh — STP-T MQAR Phase 2 environment setup
 # RISE Lab, Purdue University  |  March 2026
 #
-# DESIGN PRINCIPLE (inherited from P1):
-#   RunPod pods ship with a matched PyTorch stack. We NEVER let pip modify it.
-#   All third-party packages are installed with --no-deps where they could
-#   pull in a conflicting torch version.
+# PLATFORM SUPPORT:
+#   - Cloud GPU pods  (RunPod, Thunder Compute, Lambda Labs, Vast.ai)
+#   - Purdue clusters (Anvil, Gilbreth) — set PURDUE=1 or auto-detected
+#   - Any Linux machine with Python 3 + PyTorch + CUDA
 #
-# What this script does:
-#   1.  GPU + PyTorch version check
-#   2.  System packages (git, tmux)
-#   3.  Safe Python deps (einops, wandb, pyyaml, etc.)
-#   4.  flash-linear-attention with --no-deps + BitNet conflict fix
-#   5.  Zoology clone + install (--no-deps)
-#   6.  Zoology patches: return_embeddings=False, pydantic v2 LoggerConfig,
-#       BaseConv implicit_long_conv, fla head_first compatibility
-#   7.  Register mixer directory on sys.path (.pth file)
-#   8.  Copy stp_train.py (checkpoint + JSON results + best-epoch tracking)
-#   9.  Full verification (imports, forward passes, logits shape, patch checks)
+# DESIGN PRINCIPLE:
+#   We NEVER let pip modify the pre-installed PyTorch stack.
+#   All packages that could pull in a conflicting torch are installed --no-deps.
+#
+# Steps:
+#   1.  Platform detection
+#   2.  GPU + PyTorch version check
+#   3.  System packages (git, tmux) — skipped gracefully on clusters
+#   4.  Safe Python deps (einops, wandb, pyyaml, etc.)
+#   5.  flash-linear-attention with --no-deps + BitNet conflict fix
+#   6.  Zoology clone + install (--no-deps)
+#   7.  Zoology patches (return_embeddings, pydantic v2, fla head_first)
+#   8.  Register mixer directory on sys.path (.pth file)
+#   9.  Install stp_train.py (checkpoints + JSON results)
+#   10. Full verification
 # ════════════════════════════════════════════════════════════════════════════════
 set -euo pipefail
 
-WORKSPACE="${WORKSPACE:-/workspace}"
-REPO_DIR="${WORKSPACE}/stp-t-mqar-p2"
+# ── Workspace + repo paths ───────────────────────────────────────────────────
+_SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+_REPO_ROOT="$(cd "${_SCRIPT_DIR}/.." && pwd)"
+WORKSPACE="${WORKSPACE:-$(dirname "${_REPO_ROOT}")}"
+REPO_DIR="${_REPO_ROOT}"
 ZOOLOGY_DIR="${WORKSPACE}/zoology"
 MIXER_DIR="${REPO_DIR}/mixers"
+
+# ── Platform detection ───────────────────────────────────────────────────────
+IS_PURDUE=0
+if [ "${PURDUE:-0}" = "1" ] || \
+   echo "${HOSTNAME:-}" | grep -qiE "anvil|gilbreth|bell|negishi|purdue" || \
+   [ -n "${RCAC_CLUSTER:-}" ]; then
+    IS_PURDUE=1
+fi
+
+# ── pip resolution ───────────────────────────────────────────────────────────
+if command -v pip3 &>/dev/null; then
+    PIP="pip3"
+elif command -v pip &>/dev/null; then
+    PIP="pip"
+else
+    PIP="python3 -m pip"
+fi
+
+# On Purdue outside conda: add --user since system site-packages is read-only
+PIP_EXTRA=""
+if [ "${IS_PURDUE}" = "1" ] && [ -z "${CONDA_PREFIX:-}" ]; then
+    PIP_EXTRA="--user"
+fi
 
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; NC='\033[0m'
 ok()   { echo -e "  ${GREEN}✓${NC} $1"; }
@@ -34,49 +64,101 @@ fail() { echo -e "  ${RED}✗${NC} $1"; }
 
 echo "════════════════════════════════════════════════════════════════"
 echo " STP-T MQAR Phase 2 Setup"
-echo " Workspace: ${WORKSPACE}"
+echo " Workspace:  ${WORKSPACE}"
+echo " Repo:       ${REPO_DIR}"
+if [ "${IS_PURDUE}" = "1" ]; then
+echo " Platform:   Purdue cluster (${RCAC_CLUSTER:-${HOSTNAME:-unknown}})"
+else
+echo " Platform:   Cloud/Linux pod"
+fi
 echo "════════════════════════════════════════════════════════════════"
 
-# ── 1. GPU check ─────────────────────────────────────────────────────────────
-echo "[1/9] GPU check..."
-if ! nvidia-smi &>/dev/null; then fail "No GPU detected"; exit 1; fi
+# ── 1. Platform-specific pre-checks ─────────────────────────────────────────
+echo "[1/10] Platform check..."
+if [ "${IS_PURDUE}" = "1" ]; then
+    # On Purdue, modules must be loaded before running this script.
+    # We just check that Python and torch are available.
+    if ! command -v python3 &>/dev/null; then
+        fail "python3 not found. On Purdue, load modules first:"
+        echo "        module load anaconda"
+        echo "        module load cuda"
+        echo "        conda activate your_env"
+        exit 1
+    fi
+    ok "Purdue cluster detected — skipping apt-get steps"
+    ok "python3: $(python3 --version 2>&1)"
+else
+    ok "Cloud pod — full setup mode"
+fi
+
+# ── 2. GPU check ─────────────────────────────────────────────────────────────
+echo "[2/10] GPU check..."
+if ! nvidia-smi &>/dev/null; then
+    fail "No GPU / nvidia-smi not found"
+    if [ "${IS_PURDUE}" = "1" ]; then
+        echo "       On Purdue: make sure you have a GPU allocation."
+        echo "       Example: salloc -A your_account -p gpu -N 1 --gpus-per-node=1"
+    fi
+    exit 1
+fi
 GPU_NAME=$(nvidia-smi --query-gpu=name --format=csv,noheader | head -1)
 GPU_MEM=$(nvidia-smi --query-gpu=memory.total --format=csv,noheader | head -1)
 ok "GPU: ${GPU_NAME} (${GPU_MEM})"
 
-# Record torch version — must not change after installs
 TORCH_VER=$(python3 -c "import torch; print(torch.__version__)" 2>/dev/null || echo "none")
 if [ "${TORCH_VER}" = "none" ]; then
-    fail "PyTorch not found. Use a PyTorch pod template."; exit 1
+    fail "PyTorch not found."
+    if [ "${IS_PURDUE}" = "1" ]; then
+        echo "       Load modules: module load anaconda cuda"
+        echo "       Then activate a conda env with PyTorch installed."
+    else
+        echo "       Use a PyTorch pod template."
+    fi
+    exit 1
 fi
-ok "PyTorch ${TORCH_VER} (pod-installed, will not modify)"
+ok "PyTorch ${TORCH_VER}"
 
-# ── 2. System packages ───────────────────────────────────────────────────────
-echo "[2/9] System packages..."
-apt-get update -qq && apt-get install -y -qq git tmux >/dev/null 2>&1 && ok "git, tmux" || warn "apt failed"
+# ── 3. System packages ───────────────────────────────────────────────────────
+echo "[3/10] System packages..."
+if [ "${IS_PURDUE}" = "1" ]; then
+    # On clusters, git is always available; tmux may or may not be.
+    command -v git  &>/dev/null && ok "git (system)" || warn "git not found — install manually"
+    command -v tmux &>/dev/null && ok "tmux (system)" || warn "tmux not found — use 'screen' or 'nohup' instead"
+else
+    # Cloud pod — use apt
+    if command -v apt-get &>/dev/null; then
+        apt-get update -qq 2>/dev/null && \
+        apt-get install -y -qq git tmux 2>/dev/null && \
+        ok "git, tmux installed" || warn "apt-get failed — git/tmux may already be present"
+    else
+        warn "apt-get not available — skipping system packages"
+    fi
+fi
 
-# ── 3. Safe Python deps ──────────────────────────────────────────────────────
-echo "[3/9] Python dependencies..."
-
-# Pure Python packages — safe to install normally
+# ── 4. Python dependencies ───────────────────────────────────────────────────
+echo "[4/10] Python dependencies..."
 for pkg in einops wandb pyyaml pandas tqdm rich opt-einsum scipy; do
     pymod="${pkg//-/_}"
-    python3 -c "import ${pymod}" 2>/dev/null || \
-        pip install "${pkg}" --break-system-packages -q 2>/dev/null
+    if python3 -c "import ${pymod}" 2>/dev/null; then
+        true  # already installed
+    else
+        ${PIP} install "${pkg}" --break-system-packages ${PIP_EXTRA} -q 2>/dev/null || \
+        ${PIP} install "${pkg}" ${PIP_EXTRA} -q 2>/dev/null || true
+    fi
 done
 
-# pydantic v2 — install without deps to avoid pulling new torch
 python3 -c "import pydantic" 2>/dev/null || \
-    pip install pydantic --break-system-packages -q --no-deps 2>/dev/null
+    ${PIP} install pydantic --break-system-packages ${PIP_EXTRA} -q --no-deps 2>/dev/null || \
+    ${PIP} install pydantic ${PIP_EXTRA} -q --no-deps 2>/dev/null || true
 
-# transformers — already on most pods; --no-deps if missing
 python3 -c "import transformers" 2>/dev/null || \
-    pip install transformers --break-system-packages -q --no-deps 2>/dev/null
+    ${PIP} install transformers --break-system-packages ${PIP_EXTRA} -q --no-deps 2>/dev/null || \
+    ${PIP} install transformers ${PIP_EXTRA} -q --no-deps 2>/dev/null || true
 
 ok "Python deps"
 
-# ── 4. flash-linear-attention (fla) — with PyTorch guard ────────────────────
-echo "[4/9] flash-linear-attention..."
+# ── 5. flash-linear-attention ────────────────────────────────────────────────
+echo "[5/10] flash-linear-attention..."
 FLA_OK=0
 
 if python3 -c "from fla.layers import GatedLinearAttention, MultiScaleRetention" 2>/dev/null; then
@@ -85,19 +167,20 @@ if python3 -c "from fla.layers import GatedLinearAttention, MultiScaleRetention"
 fi
 
 if [ "${FLA_OK}" -eq 0 ]; then
-    # Install with --no-deps so torch is NEVER touched.
-    # fla-core is a separate package required by flash-linear-attention for
-    # some sub-modules (CUDA kernels / triton ops).  P1 found both are needed.
-    pip install "flash-linear-attention>=0.4.1" \
-        --break-system-packages -q --no-deps 2>/dev/null || true
-    pip install fla-core \
-        --break-system-packages -q --no-deps 2>/dev/null || true
+    ${PIP} install "flash-linear-attention>=0.4.1" \
+        --break-system-packages ${PIP_EXTRA} -q --no-deps 2>/dev/null || \
+    ${PIP} install "flash-linear-attention>=0.4.1" \
+        ${PIP_EXTRA} -q --no-deps 2>/dev/null || true
+
+    ${PIP} install fla-core \
+        --break-system-packages ${PIP_EXTRA} -q --no-deps 2>/dev/null || \
+    ${PIP} install fla-core \
+        ${PIP_EXTRA} -q --no-deps 2>/dev/null || true
 
     if python3 -c "from fla.layers import GatedLinearAttention, MultiScaleRetention" 2>/dev/null; then
         ok "fla installed (--no-deps)"
         FLA_OK=1
     else
-        # BitNet AutoConfig.register conflict — fix by adding exist_ok=True
         warn "fla import failing — attempting BitNet registration patch"
         FLA_BITNET=$(python3 -c \
             "import fla, os; print(os.path.join(os.path.dirname(fla.__file__), 'models', 'bitnet', '__init__.py'))" \
@@ -120,32 +203,31 @@ fi
 # Guard: verify torch was not changed
 TORCH_AFTER=$(python3 -c "import torch; print(torch.__version__)" 2>/dev/null)
 if [ "${TORCH_VER}" != "${TORCH_AFTER}" ]; then
-    fail "PyTorch version changed! (${TORCH_VER} → ${TORCH_AFTER}) — reinstall pod"
+    fail "PyTorch version changed! (${TORCH_VER} → ${TORCH_AFTER})"
     exit 1
 fi
 ok "PyTorch version preserved: ${TORCH_VER}"
 
-# ── 5. Zoology ───────────────────────────────────────────────────────────────
-echo "[5/9] Zoology framework..."
+# ── 6. Zoology ───────────────────────────────────────────────────────────────
+echo "[6/10] Zoology framework..."
 if [ ! -d "${ZOOLOGY_DIR}" ]; then
     echo "  Cloning Zoology..."
     git clone -q https://github.com/HazyResearch/zoology.git "${ZOOLOGY_DIR}"
-    ok "Cloned Zoology"
+    ok "Cloned Zoology → ${ZOOLOGY_DIR}"
 fi
 cd "${ZOOLOGY_DIR}"
 if ! python3 -c "import zoology" 2>/dev/null; then
-    pip install -e . --break-system-packages -q --no-deps 2>/dev/null \
-        && ok "Zoology installed (--no-deps)" \
-        || { fail "Zoology install failed"; exit 1; }
+    ${PIP} install -e . --break-system-packages ${PIP_EXTRA} -q --no-deps 2>/dev/null || \
+    ${PIP} install -e . ${PIP_EXTRA} -q --no-deps 2>/dev/null && \
+    ok "Zoology installed (--no-deps)" || { fail "Zoology install failed"; exit 1; }
 else
     ok "Zoology (existing)"
 fi
 
-# ── 6. Zoology patches ───────────────────────────────────────────────────────
-echo "[6/9] Zoology patches..."
+# ── 7. Zoology patches ───────────────────────────────────────────────────────
+echo "[7/10] Zoology patches..."
 
 # Patch A: return_embeddings=False
-# Without this ALL models plateau at ~25% accuracy (embeddings instead of logits)
 MODEL_PY="${ZOOLOGY_DIR}/zoology/model.py"
 if grep -q "return_embeddings.*=.*True" "${MODEL_PY}" 2>/dev/null; then
     sed -i 's/return_embeddings.*=.*True/return_embeddings: bool = False/g' "${MODEL_PY}"
@@ -155,9 +237,6 @@ else
 fi
 
 # Patch B: pydantic v2 LoggerConfig
-# Zoology defines `project_name: str = None` which pydantic v2 rejects with
-# "PydanticUserError: A non-annotated attribute was detected".
-# Fix: change to Optional[str] = None for both project_name and entity.
 PYDANTIC_OK=$(python3 -c "
 from zoology.config import LoggerConfig
 lc = LoggerConfig()
@@ -169,7 +248,6 @@ if [ "${PYDANTIC_OK}" = "ok" ]; then
     ok "pydantic v2 LoggerConfig already OK"
 else
     CFG_PY="${ZOOLOGY_DIR}/zoology/config.py"
-    # Ensure Optional is imported
     if ! grep "from typing import" "${CFG_PY}" | grep -q "Optional"; then
         sed -i 's/from typing import \(.*\)/from typing import Optional, \1/' "${CFG_PY}"
     fi
@@ -190,15 +268,12 @@ print('ok')
 fi
 
 # Patch C: fla head_first compatibility
-# fla 0.4.1+ removed the head_first=False argument from GLA, DeltaNet, etc.
-# Zoology's built-in fla wrappers still pass it → TypeError at runtime.
 echo "  Patching fla head_first compatibility..."
 for fla_wrapper in gla.py delta_net.py gated_delta_net.py rwkv7.py; do
     fpath="${ZOOLOGY_DIR}/zoology/mixers/${fla_wrapper}"
     [ ! -f "${fpath}" ] && continue
     if grep -q "head_first" "${fpath}" 2>/dev/null; then
         sed -i '/head_first=False/d' "${fpath}"
-        # Remove trailing commas left by deletion: ", )" → ")"
         python3 -c "
 import re
 t = open('${fpath}').read()
@@ -209,55 +284,61 @@ open('${fpath}', 'w').write(t)
     fi
 done
 
-# ── 7. Register mixer directory on sys.path ──────────────────────────────────
-echo "[7/9] Registering mixers on sys.path..."
-SITE_PKG=$(python3 -c "import site; print(site.getsitepackages()[0])")
+# ── 8. Register mixer directory on sys.path ──────────────────────────────────
+echo "[8/10] Registering mixers on sys.path..."
+# Try system site-packages first; fall back to user site-packages on clusters
+SITE_PKG=$(python3 -c "import site; print(site.getsitepackages()[0])" 2>/dev/null || \
+           python3 -c "import site; print(site.getusersitepackages())")
 PTH_FILE="${SITE_PKG}/stp_t_p2.pth"
-echo "${MIXER_DIR}" > "${PTH_FILE}"
-ok "Registered: ${MIXER_DIR}"
-ok "  → ${PTH_FILE}"
+if echo "${MIXER_DIR}" > "${PTH_FILE}" 2>/dev/null; then
+    ok "Registered: ${MIXER_DIR}"
+    ok "  → ${PTH_FILE}"
+else
+    # Fallback: write to user site-packages
+    USER_SITE=$(python3 -c "import site; print(site.getusersitepackages())")
+    mkdir -p "${USER_SITE}"
+    echo "${MIXER_DIR}" > "${USER_SITE}/stp_t_p2.pth"
+    ok "Registered (user): ${MIXER_DIR}"
+    ok "  → ${USER_SITE}/stp_t_p2.pth"
+fi
 
-# ── 8. Install stp_train.py ──────────────────────────────────────────────────
-echo "[8/9] Installing stp_train.py..."
+# ── 9. Install stp_train.py ──────────────────────────────────────────────────
+echo "[9/10] Installing stp_train.py..."
 if [ -f "${REPO_DIR}/scripts/stp_train.py" ]; then
     if [ ! -f "${ZOOLOGY_DIR}/zoology/train.py.orig" ]; then
         cp "${ZOOLOGY_DIR}/zoology/train.py" "${ZOOLOGY_DIR}/zoology/train.py.orig"
     fi
     cp "${REPO_DIR}/scripts/stp_train.py" "${ZOOLOGY_DIR}/zoology/train.py"
-    ok "stp_train.py installed (checkpoints + JSON results + best-epoch tracking)"
+    ok "stp_train.py installed"
 else
-    warn "stp_train.py not found at ${REPO_DIR}/scripts/stp_train.py"
-    warn "Results will use WandB only (no per-run JSON files)"
+    warn "stp_train.py not found — WandB-only results"
 fi
 
-# Create results and checkpoint directories
 mkdir -p "${WORKSPACE}/results/runs"
 mkdir -p "${WORKSPACE}/checkpoints"
-ok "Directories: results/runs/, checkpoints/"
+ok "Directories: ${WORKSPACE}/results/runs/, ${WORKSPACE}/checkpoints/"
 
-# ── 9. Full verification ─────────────────────────────────────────────────────
-echo "[9/9] Verification..."
-python3 << 'PYEOF'
+# ── 10. Verification ─────────────────────────────────────────────────────────
+echo "[10/10] Verification..."
+WORKSPACE_FOR_PY="${WORKSPACE}" python3 << 'PYEOF'
 import sys, os, torch
 
 errors = []
+ws = os.environ.get("WORKSPACE_FOR_PY", "")
 
-# GPU
 if not torch.cuda.is_available():
     errors.append("CUDA not available")
 else:
     print(f"  ✓ PyTorch {torch.__version__}, GPU: {torch.cuda.get_device_name(0)}")
 
-# Zoology config + pydantic v2 fix
 try:
     from zoology.config import TrainConfig, ModelConfig, DataConfig, LoggerConfig, ModuleConfig
     lc = LoggerConfig()
-    assert lc.project_name is None and lc.entity is None, "LoggerConfig pydantic fix not applied"
+    assert lc.project_name is None and lc.entity is None
     print("  ✓ zoology.config (pydantic v2 OK)")
 except Exception as e:
     errors.append(f"zoology.config: {e}")
 
-# P1 data module (multiquery_ar, not associative_recall)
 try:
     from zoology.data.multiquery_ar import MQARConfig
     _ = MQARConfig(vocab_size=8192, input_seq_len=64, num_examples=10, num_kv_pairs=4)
@@ -265,21 +346,12 @@ try:
 except Exception as e:
     errors.append(f"zoology.data.multiquery_ar: {e}")
 
-# BaseConv path (underscore, not convolution)
 try:
     from zoology.mixers.base_conv import BaseConv
     print("  ✓ zoology.mixers.base_conv.BaseConv")
 except Exception as e:
     errors.append(f"zoology.mixers.base_conv: {e}")
 
-# Hybrid wrapper
-try:
-    from zoology.mixers.hybrid import Hybrid
-    print("  ✓ zoology.mixers.hybrid.Hybrid")
-except Exception as e:
-    errors.append(f"zoology.mixers.hybrid: {e}")
-
-# MHA + Based
 try:
     from zoology.mixers.attention import MHA
     from zoology.mixers.based import Based
@@ -287,28 +359,24 @@ try:
 except Exception as e:
     errors.append(f"zoology mixers: {e}")
 
-# fla
 try:
     from fla.layers import GatedLinearAttention, MultiScaleRetention
     print("  ✓ fla.layers (GatedLinearAttention, MultiScaleRetention)")
 except Exception as e:
     errors.append(f"fla.layers: {e}")
 
-# fla_wrappers
 try:
     from fla_wrappers import RetNetWrapper, GLAWrapper
     print("  ✓ fla_wrappers (RetNetWrapper, GLAWrapper)")
 except Exception as e:
     errors.append(f"fla_wrappers: {e}")
 
-# stp_v3
 try:
     from stp_v3 import STPT, STPTLight
     print("  ✓ stp_v3 (STPT, STPTLight)")
 except Exception as e:
     errors.append(f"stp_v3: {e}")
 
-# Forward passes (GPU)
 if not errors and torch.cuda.is_available():
     try:
         from stp_v3 import STPT, STPTLight
@@ -324,7 +392,6 @@ if not errors and torch.cuda.is_available():
     except Exception as e:
         errors.append(f"STP forward pass: {e}")
 
-# return_embeddings fix (must return logits not embeddings)
 try:
     from zoology.model import LanguageModel
     from zoology.config import ModelConfig, ModuleConfig
@@ -344,11 +411,10 @@ try:
     out = m(torch.randint(0, 8192, (2, 64)).cuda())
     assert out.shape == (2, 64, 8192), f"Logits shape {out.shape} != (2, 64, 8192)"
     del m
-    print("  ✓ Logits shape correct (return_embeddings=False fix working)")
+    print("  ✓ Logits shape correct (return_embeddings=False working)")
 except Exception as e:
     errors.append(f"return_embeddings check: {e}")
 
-# stp_train.py patch check
 try:
     from zoology.train import Trainer
     if hasattr(Trainer, '_save_checkpoint') and hasattr(Trainer, '_save_run_results'):
@@ -358,11 +424,10 @@ try:
 except Exception as e:
     errors.append(f"train.py import: {e}")
 
-# Results dirs
-for d in ["/workspace/results/runs", "/workspace/checkpoints"]:
-    if os.path.isdir(d):
+for d in [f"{ws}/results/runs", f"{ws}/checkpoints"]:
+    if d and os.path.isdir(d):
         print(f"  ✓ {d}/")
-    else:
+    elif d:
         print(f"  ⚠ {d}/ missing")
 
 if errors:
@@ -374,15 +439,21 @@ else:
     print("\n  ALL CHECKS PASSED")
 PYEOF
 
-# Final summary
 echo ""
 echo "════════════════════════════════════════════════════════════════"
 echo " SETUP COMPLETE"
 echo "════════════════════════════════════════════════════════════════"
 echo ""
 echo " Quick start:"
+if [ "${IS_PURDUE}" = "1" ]; then
+echo "   screen -S stp   # or: tmux new -s stp (if tmux available)"
+else
 echo "   tmux new -s stp"
-echo "   bash ${REPO_DIR}/scripts/run.sh stp_light,stp_t"
+fi
+echo "   cd ${ZOOLOGY_DIR}"
+echo "   export WANDB_MODE=offline"
+echo "   export RUN_CONFIG=${REPO_DIR}/configs/run_configs.csv"
+echo "   STP_MODELS=stp_light,stp_t python3 -m zoology.launch ${REPO_DIR}/configs/mqar_p2.py"
 echo ""
-echo " See RUNSHEET.md for full instructions and CSV editing guide."
+echo " See RUNSHEET.md for full instructions."
 echo "════════════════════════════════════════════════════════════════"
