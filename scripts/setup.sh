@@ -43,12 +43,29 @@ if [ "${PURDUE:-0}" = "1" ] || \
 fi
 
 # ── pip resolution ───────────────────────────────────────────────────────────
-if command -v pip3 &>/dev/null; then
+# ALWAYS prefer "python3 -m pip" — it uses the pip module matching the active
+# Python interpreter and avoids the broken system pip3 binary on Python ≥3.12
+# (Ubuntu/Debian ship /usr/bin/pip3 linked to a pip that uses the removed
+# pkgutil.ImpImporter, causing "AttributeError: module 'pkgutil' has no
+# attribute 'ImpImporter'" on every pip3 invocation).
+if python3 -m pip --version &>/dev/null; then
+    PIP="python3 -m pip"
+elif command -v pip3 &>/dev/null && pip3 --version &>/dev/null 2>&1; then
     PIP="pip3"
-elif command -v pip &>/dev/null; then
+elif command -v pip &>/dev/null && pip --version &>/dev/null 2>&1; then
     PIP="pip"
 else
-    PIP="python3 -m pip"
+    # Last resort: bootstrap pip
+    warn "No working pip found — attempting bootstrap"
+    if python3 -m ensurepip --upgrade &>/dev/null; then
+        PIP="python3 -m pip"
+    elif curl -sS https://bootstrap.pypa.io/get-pip.py -o /tmp/get-pip.py 2>/dev/null; then
+        python3 /tmp/get-pip.py --break-system-packages 2>/dev/null
+        PIP="python3 -m pip"
+    else
+        fail "Cannot find or bootstrap pip. Install pip manually and rerun."
+        exit 1
+    fi
 fi
 
 # On Purdue outside conda: add --user since system site-packages is read-only

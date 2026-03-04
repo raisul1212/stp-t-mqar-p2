@@ -318,6 +318,7 @@ scp username@anvil.rcac.purdue.edu:~/stp_*.tar.gz . # Purdue
 | `No module named fla` | `pip3 install flash-linear-attention fla-core --no-deps` |
 | `No module named stp_v3` | Rerun setup or `export PYTHONPATH=~/stp-t-mqar-p2/mixers:$PYTHONPATH` |
 | `pip: command not found` | setup.sh auto-detects pip3/pip/python3 -m pip — rerun setup |
+| `pkgutil has no attribute ImpImporter` | System pip3 binary is broken on Python ≥3.12. setup.sh now prefers `python3 -m pip` which bypasses this. If you hit this on an older commit, run `python3 -m pip install --upgrade pip --break-system-packages` then rerun setup. |
 | `apt-get: permission denied` | Expected on Purdue — setup.sh skips apt gracefully |
 | `tmux not found` | `sudo apt-get install tmux` (cloud) or use `screen` (Purdue) |
 | OOM at d=256 | Reduce batch_size to 32 for d=256 rows (command above) |
