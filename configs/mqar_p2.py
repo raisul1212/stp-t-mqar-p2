@@ -193,9 +193,20 @@ def _seq_cfg_for(row: dict) -> dict:
             "kwargs": {"num_heads": n_heads},
         }
     elif model == "based":
+        # Based uses its own head count (num_heads=1, num_key_value_heads=1)
+        # matching Zoology's add_based factory from models_repo.py.
+        # The CSV num_heads column is ignored for Based — these are hardcoded
+        # to match the published Zoology MQAR config exactly.
         return {
             "name": "zoology.mixers.based.Based",
-            "kwargs": {"num_heads": n_heads},
+            "kwargs": {
+                "l_max": INPUT_SEQ_LEN_MAX,
+                "feature_dim": 16,
+                "feature_name": "taylor_exp",
+                "num_key_value_heads": 1,
+                "num_heads": 1,
+                "train_view": "quadratic",
+            },
         }
     elif model == "retnet":
         # fla_wrappers.RetNetWrapper bridges fla's hidden_size= API to Zoology's d_model= API.
