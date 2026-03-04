@@ -313,12 +313,15 @@ scp username@anvil.rcac.purdue.edu:~/stp_*.tar.gz . # Purdue
 
 | Problem | Fix |
 |---------|-----|
+| `pkgutil has no attribute ImpImporter` | **Root cause of most setup failures.** Thunder Compute and some Ubuntu images ship Python 3.12 with pip 22.0.2, which is broken on Python ≥3.12. `setup.sh` now auto-detects this and bootstraps a fresh pip before installing anything. If you hit this on an older commit: `curl -sS https://bootstrap.pypa.io/get-pip.py \| python3 -` then rerun setup. |
+| `no such option: --break-system-packages` | Your pip is too old for this flag (added in pip ≥23.0.1). `setup.sh` now detects this automatically. On older commits: remove `--break-system-packages` from the failing command, or upgrade pip first (see row above). |
+| fla / pydantic / transformers not installed (silent failure) | Likely caused by the broken pip above — all `pip install` commands were silently failing. After fixing pip, rerun `bash scripts/setup.sh`. |
+| `No module named 'fla.modules'` | `fla-core` package is missing. `setup.sh` now installs both `flash-linear-attention` and `fla-core`. Manual fix: `python3 -m pip install fla-core --no-deps` |
+| `No module named 'regex'` (or `tokenizers`, `safetensors`) | transformers was installed with `--no-deps` but its runtime deps are missing. `setup.sh` now installs them explicitly. Manual fix: `python3 -m pip install regex tokenizers safetensors huggingface-hub` |
 | All accuracies ~25% | `grep return_embeddings zoology/zoology/model.py` must show `False`. Rerun setup. |
-| `No module named zoology` | `cd zoology && pip3 install -e . --no-deps` |
-| `No module named fla` | `pip3 install flash-linear-attention fla-core --no-deps` |
+| `No module named zoology` | `cd zoology && python3 -m pip install -e . --no-deps` |
+| `No module named fla` | `python3 -m pip install flash-linear-attention fla-core --no-deps` |
 | `No module named stp_v3` | Rerun setup or `export PYTHONPATH=~/stp-t-mqar-p2/mixers:$PYTHONPATH` |
-| `pip: command not found` | setup.sh auto-detects pip3/pip/python3 -m pip — rerun setup |
-| `pkgutil has no attribute ImpImporter` | System pip3 binary is broken on Python ≥3.12. setup.sh now prefers `python3 -m pip` which bypasses this. If you hit this on an older commit, run `python3 -m pip install --upgrade pip --break-system-packages` then rerun setup. |
 | `apt-get: permission denied` | Expected on Purdue — setup.sh skips apt gracefully |
 | `tmux not found` | `sudo apt-get install tmux` (cloud) or use `screen` (Purdue) |
 | OOM at d=256 | Reduce batch_size to 32 for d=256 rows (command above) |

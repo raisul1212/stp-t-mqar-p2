@@ -10,14 +10,27 @@
 #
 # DESIGN PRINCIPLE:
 #   We NEVER let pip modify the pre-installed PyTorch stack.
-#   All packages that could pull in a conflicting torch are installed --no-deps.
+#   Packages that bundle torch in their deps are installed with
+#   --no-deps PLUS their non-torch dependencies are listed explicitly.
+#
+# KNOWN PLATFORM ISSUES:
+#   - Thunder Compute and some Ubuntu 22.04/24.04 images ship Python 3.12
+#     with pip 22.0.2, which crashes on ANY operation due to the removed
+#     pkgutil.ImpImporter (removed in Python 3.12, but pip 22 still uses it).
+#     Both `pip3` and `python3 -m pip` are broken in this state because they
+#     load the same /usr/lib/python3/dist-packages/pip code.
+#     Fix: bootstrap a fresh pip via get-pip.py before doing anything.
+#   - The --break-system-packages flag (pip ≥23.0.1) is not recognized by
+#     older pip versions and causes silent failures when errors are swallowed.
+#     Fix: detect whether the flag is supported, then use it consistently.
 #
 # Steps:
+#   0.  pip bootstrap (if system pip is broken)
 #   1.  Platform detection
 #   2.  GPU + PyTorch version check
 #   3.  System packages (git, tmux) — skipped gracefully on clusters
 #   4.  Safe Python deps (einops, wandb, pyyaml, etc.)
-#   5.  flash-linear-attention with --no-deps + BitNet conflict fix
+#   5.  flash-linear-attention + fla-core + their non-torch deps
 #   6.  Zoology clone + install (--no-deps)
 #   7.  Zoology patches (return_embeddings, pydantic v2, fla head_first)
 #   8.  Register mixer directory on sys.path (.pth file)
@@ -25,6 +38,12 @@
 #   10. Full verification
 # ════════════════════════════════════════════════════════════════════════════════
 set -euo pipefail
+
+# ── Helpers (defined FIRST so all steps can use them) ────────────────────────
+RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; NC='\033[0m'
+ok()   { echo -e "  ${GREEN}✓${NC} $1"; }
+warn() { echo -e "  ${YELLOW}⚠${NC} $1"; }
+fail() { echo -e "  ${RED}✗${NC} $1"; }
 
 # ── Workspace + repo paths ───────────────────────────────────────────────────
 _SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -42,30 +61,63 @@ if [ "${PURDUE:-0}" = "1" ] || \
     IS_PURDUE=1
 fi
 
-# ── pip resolution ───────────────────────────────────────────────────────────
-# ALWAYS prefer "python3 -m pip" — it uses the pip module matching the active
-# Python interpreter and avoids the broken system pip3 binary on Python ≥3.12
-# (Ubuntu/Debian ship /usr/bin/pip3 linked to a pip that uses the removed
-# pkgutil.ImpImporter, causing "AttributeError: module 'pkgutil' has no
-# attribute 'ImpImporter'" on every pip3 invocation).
-if python3 -m pip --version &>/dev/null; then
-    PIP="python3 -m pip"
-elif command -v pip3 &>/dev/null && pip3 --version &>/dev/null 2>&1; then
-    PIP="pip3"
-elif command -v pip &>/dev/null && pip --version &>/dev/null 2>&1; then
-    PIP="pip"
-else
-    # Last resort: bootstrap pip
-    warn "No working pip found — attempting bootstrap"
-    if python3 -m ensurepip --upgrade &>/dev/null; then
-        PIP="python3 -m pip"
-    elif curl -sS https://bootstrap.pypa.io/get-pip.py -o /tmp/get-pip.py 2>/dev/null; then
-        python3 /tmp/get-pip.py --break-system-packages 2>/dev/null
-        PIP="python3 -m pip"
+# ── Step 0: pip bootstrap + resolution ───────────────────────────────────────
+# PROBLEM: Many cloud GPU images (Thunder Compute, some RunPod/Lambda base
+# images) ship Ubuntu with Python 3.12 but pip 22.0.2. This pip version
+# crashes on ANY operation — including `python3 -m pip install` — because it
+# uses pkgutil.ImpImporter which was removed in Python 3.12.
+# Both `pip3` and `python3 -m pip` are broken because they load the same
+# /usr/lib/python3/dist-packages/pip code.
+#
+# SOLUTION: Test pip with an actual install operation. If that fails, bootstrap
+# a fresh pip via get-pip.py before proceeding. This is safe and idempotent.
+#
+# NOTE: `python3 -m pip --version` can PASS even when the pip is broken
+# (the crash happens deeper in the install codepath), so we must test with
+# a real operation like --dry-run.
+
+_pip_works() {
+    # Test with an actual operation, not just --version (which can pass on broken pip).
+    # Try with --break-system-packages first (PEP 668 systems reject bare --dry-run).
+    python3 -m pip install --dry-run --break-system-packages pip &>/dev/null 2>&1 || \
+    python3 -m pip install --dry-run pip &>/dev/null 2>&1
+}
+
+if ! _pip_works; then
+    echo "[0/10] Bootstrapping pip (system pip is broken on this Python)..."
+    # Method 1: get-pip.py (most reliable, works even with no pip at all)
+    if command -v curl &>/dev/null; then
+        curl -sS https://bootstrap.pypa.io/get-pip.py -o /tmp/get-pip.py
+        python3 /tmp/get-pip.py --quiet 2>&1 | tail -3
+    elif command -v wget &>/dev/null; then
+        wget -qO /tmp/get-pip.py https://bootstrap.pypa.io/get-pip.py
+        python3 /tmp/get-pip.py --quiet 2>&1 | tail -3
+    # Method 2: ensurepip (available on some images)
+    elif python3 -m ensurepip --upgrade &>/dev/null; then
+        python3 -m pip install --upgrade pip -q 2>/dev/null || true
     else
-        fail "Cannot find or bootstrap pip. Install pip manually and rerun."
+        fail "Cannot bootstrap pip. Install pip manually and rerun."
         exit 1
     fi
+
+    if _pip_works; then
+        ok "pip bootstrapped: $(python3 -m pip --version 2>/dev/null)"
+    else
+        fail "pip bootstrap failed. Install pip manually and rerun."
+        exit 1
+    fi
+else
+    ok "pip OK: $(python3 -m pip --version 2>/dev/null)"
+fi
+
+PIP="python3 -m pip"
+
+# Detect whether --break-system-packages is supported (pip ≥23.0.1).
+# This flag is needed on externally-managed Python installs (PEP 668) but
+# is an unknown option on older pip, causing hard failures.
+BSP=""
+if ${PIP} install --dry-run --break-system-packages pip &>/dev/null 2>&1; then
+    BSP="--break-system-packages"
 fi
 
 # On Purdue outside conda: add --user since system site-packages is read-only
@@ -74,15 +126,24 @@ if [ "${IS_PURDUE}" = "1" ] && [ -z "${CONDA_PREFIX:-}" ]; then
     PIP_EXTRA="--user"
 fi
 
-RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; NC='\033[0m'
-ok()   { echo -e "  ${GREEN}✓${NC} $1"; }
-warn() { echo -e "  ${YELLOW}⚠${NC} $1"; }
-fail() { echo -e "  ${RED}✗${NC} $1"; }
+# ── pip_install helper ───────────────────────────────────────────────────────
+# Central install function so we never silently swallow errors again.
+# Usage: pip_install [--no-deps] package1 [package2 ...]
+pip_install() {
+    local no_deps=""
+    if [ "${1:-}" = "--no-deps" ]; then
+        no_deps="--no-deps"
+        shift
+    fi
+    ${PIP} install ${BSP} ${PIP_EXTRA} ${no_deps} -q "$@" 2>&1 | \
+        grep -v "WARNING: Running pip as the 'root'" || true
+}
 
 echo "════════════════════════════════════════════════════════════════"
 echo " STP-T MQAR Phase 2 Setup"
 echo " Workspace:  ${WORKSPACE}"
 echo " Repo:       ${REPO_DIR}"
+echo " pip:        $(${PIP} --version 2>/dev/null | head -1)"
 if [ "${IS_PURDUE}" = "1" ]; then
 echo " Platform:   Purdue cluster (${RCAC_CLUSTER:-${HOSTNAME:-unknown}})"
 else
@@ -93,8 +154,6 @@ echo "════════════════════════�
 # ── 1. Platform-specific pre-checks ─────────────────────────────────────────
 echo "[1/10] Platform check..."
 if [ "${IS_PURDUE}" = "1" ]; then
-    # On Purdue, modules must be loaded before running this script.
-    # We just check that Python and torch are available.
     if ! command -v python3 &>/dev/null; then
         fail "python3 not found. On Purdue, load modules first:"
         echo "        module load anaconda"
@@ -138,11 +197,9 @@ ok "PyTorch ${TORCH_VER}"
 # ── 3. System packages ───────────────────────────────────────────────────────
 echo "[3/10] System packages..."
 if [ "${IS_PURDUE}" = "1" ]; then
-    # On clusters, git is always available; tmux may or may not be.
     command -v git  &>/dev/null && ok "git (system)" || warn "git not found — install manually"
     command -v tmux &>/dev/null && ok "tmux (system)" || warn "tmux not found — use 'screen' or 'nohup' instead"
 else
-    # Cloud pod — use apt
     if command -v apt-get &>/dev/null; then
         apt-get update -qq 2>/dev/null && \
         apt-get install -y -qq git tmux 2>/dev/null && \
@@ -154,24 +211,53 @@ fi
 
 # ── 4. Python dependencies ───────────────────────────────────────────────────
 echo "[4/10] Python dependencies..."
+# These are safe to install normally (they don't pull in torch).
+_DEPS_NEEDED=()
 for pkg in einops wandb pyyaml pandas tqdm rich opt-einsum scipy; do
     pymod="${pkg//-/_}"
-    if python3 -c "import ${pymod}" 2>/dev/null; then
-        true  # already installed
-    else
-        ${PIP} install "${pkg}" --break-system-packages ${PIP_EXTRA} -q 2>/dev/null || \
-        ${PIP} install "${pkg}" ${PIP_EXTRA} -q 2>/dev/null || true
+    if ! python3 -c "import ${pymod}" 2>/dev/null; then
+        _DEPS_NEEDED+=("${pkg}")
     fi
 done
 
-python3 -c "import pydantic" 2>/dev/null || \
-    ${PIP} install pydantic --break-system-packages ${PIP_EXTRA} -q --no-deps 2>/dev/null || \
-    ${PIP} install pydantic ${PIP_EXTRA} -q --no-deps 2>/dev/null || true
+if [ ${#_DEPS_NEEDED[@]} -gt 0 ]; then
+    echo "  Installing: ${_DEPS_NEEDED[*]}"
+    pip_install "${_DEPS_NEEDED[@]}"
+fi
 
-python3 -c "import transformers" 2>/dev/null || \
-    ${PIP} install transformers --break-system-packages ${PIP_EXTRA} -q --no-deps 2>/dev/null || \
-    ${PIP} install transformers ${PIP_EXTRA} -q --no-deps 2>/dev/null || true
+# pydantic: install normally (its deps are lightweight)
+if ! python3 -c "import pydantic" 2>/dev/null; then
+    pip_install pydantic
+fi
 
+# transformers: install with --no-deps to protect torch,
+# then install its key non-torch runtime dependencies explicitly.
+if ! python3 -c "import transformers" 2>/dev/null; then
+    echo "  Installing: transformers (--no-deps) + non-torch deps"
+    pip_install --no-deps transformers
+    # transformers runtime deps (excluding torch/tf/jax/flax):
+    _TX_DEPS=()
+    for txpkg in regex tokenizers safetensors huggingface-hub filelock packaging requests; do
+        txmod="${txpkg//-/_}"
+        if ! python3 -c "import ${txmod}" 2>/dev/null; then
+            _TX_DEPS+=("${txpkg}")
+        fi
+    done
+    if [ ${#_TX_DEPS[@]} -gt 0 ]; then
+        pip_install "${_TX_DEPS[@]}"
+    fi
+fi
+
+# Verify critical imports
+_DEP_FAILS=""
+for check_mod in einops wandb pydantic transformers; do
+    python3 -c "import ${check_mod}" 2>/dev/null || _DEP_FAILS="${_DEP_FAILS} ${check_mod}"
+done
+if [ -n "${_DEP_FAILS}" ]; then
+    fail "Failed to install:${_DEP_FAILS}"
+    echo "       Try manually: ${PIP} install${_DEP_FAILS}"
+    exit 1
+fi
 ok "Python deps"
 
 # ── 5. flash-linear-attention ────────────────────────────────────────────────
@@ -184,21 +270,24 @@ if python3 -c "from fla.layers import GatedLinearAttention, MultiScaleRetention"
 fi
 
 if [ "${FLA_OK}" -eq 0 ]; then
-    ${PIP} install "flash-linear-attention>=0.4.1" \
-        --break-system-packages ${PIP_EXTRA} -q --no-deps 2>/dev/null || \
-    ${PIP} install "flash-linear-attention>=0.4.1" \
-        ${PIP_EXTRA} -q --no-deps 2>/dev/null || true
-
-    ${PIP} install fla-core \
-        --break-system-packages ${PIP_EXTRA} -q --no-deps 2>/dev/null || \
-    ${PIP} install fla-core \
-        ${PIP_EXTRA} -q --no-deps 2>/dev/null || true
+    # Install fla + fla-core with --no-deps to protect torch.
+    # Their non-torch deps (einops, transformers) were already installed above.
+    echo "  Installing: flash-linear-attention, fla-core (--no-deps)"
+    pip_install --no-deps "flash-linear-attention>=0.4.1"
+    pip_install --no-deps fla-core
 
     if python3 -c "from fla.layers import GatedLinearAttention, MultiScaleRetention" 2>/dev/null; then
-        ok "fla installed (--no-deps)"
+        ok "fla installed"
         FLA_OK=1
     else
-        warn "fla import failing — attempting BitNet registration patch"
+        # Diagnose: show the actual error instead of swallowing it
+        warn "fla import failing. Actual error:"
+        python3 -c "from fla.layers import GatedLinearAttention, MultiScaleRetention" 2>&1 | \
+            head -5 | while read -r line; do echo "       ${line}"; done
+
+        # Try the BitNet registration patch (fla ≥0.4 sometimes conflicts
+        # with transformers' AutoModel registry)
+        warn "Attempting BitNet registration patch..."
         FLA_BITNET=$(python3 -c \
             "import fla, os; print(os.path.join(os.path.dirname(fla.__file__), 'models', 'bitnet', '__init__.py'))" \
             2>/dev/null || echo "")
@@ -208,11 +297,27 @@ if [ "${FLA_OK}" -eq 0 ]; then
             if python3 -c "from fla.layers import GatedLinearAttention, MultiScaleRetention" 2>/dev/null; then
                 ok "fla fixed (patched BitNet registration)"
                 FLA_OK=1
-            else
-                warn "fla still broken — RetNet/GLA baselines will fail at runtime"
             fi
-        else
-            warn "Cannot locate fla BitNet file — RetNet/GLA baselines may fail"
+        fi
+
+        # If still broken, try installing whatever module is missing
+        if [ "${FLA_OK}" -eq 0 ]; then
+            MISSING_MOD=$(python3 -c "
+from fla.layers import GatedLinearAttention, MultiScaleRetention
+" 2>&1 | grep "No module named" | head -1 | sed "s/.*No module named '\\([^']*\\)'.*/\\1/" || echo "")
+            if [ -n "${MISSING_MOD}" ]; then
+                warn "Missing module: ${MISSING_MOD} — attempting install"
+                pip_install "${MISSING_MOD}" 2>/dev/null || true
+                if python3 -c "from fla.layers import GatedLinearAttention, MultiScaleRetention" 2>/dev/null; then
+                    ok "fla fixed (installed missing dep: ${MISSING_MOD})"
+                    FLA_OK=1
+                fi
+            fi
+        fi
+
+        if [ "${FLA_OK}" -eq 0 ]; then
+            warn "fla still broken — RetNet/GLA baselines will fail at runtime"
+            warn "  Debug: python3 -c 'from fla.layers import GatedLinearAttention'"
         fi
     fi
 fi
@@ -234,9 +339,13 @@ if [ ! -d "${ZOOLOGY_DIR}" ]; then
 fi
 cd "${ZOOLOGY_DIR}"
 if ! python3 -c "import zoology" 2>/dev/null; then
-    ${PIP} install -e . --break-system-packages ${PIP_EXTRA} -q --no-deps 2>/dev/null || \
-    ${PIP} install -e . ${PIP_EXTRA} -q --no-deps 2>/dev/null && \
-    ok "Zoology installed (--no-deps)" || { fail "Zoology install failed"; exit 1; }
+    pip_install --no-deps -e .
+    if python3 -c "import zoology" 2>/dev/null; then
+        ok "Zoology installed (--no-deps)"
+    else
+        fail "Zoology install failed"
+        exit 1
+    fi
 else
     ok "Zoology (existing)"
 fi
@@ -265,11 +374,37 @@ if [ "${PYDANTIC_OK}" = "ok" ]; then
     ok "pydantic v2 LoggerConfig already OK"
 else
     CFG_PY="${ZOOLOGY_DIR}/zoology/config.py"
+
+    # Ensure Optional is imported
     if ! grep "from typing import" "${CFG_PY}" | grep -q "Optional"; then
         sed -i 's/from typing import \(.*\)/from typing import Optional, \1/' "${CFG_PY}"
     fi
-    sed -i 's/project_name:.*$/project_name: Optional[str] = None/' "${CFG_PY}"
-    sed -i 's/entity:.*$/entity: Optional[str] = None/' "${CFG_PY}"
+
+    # Use Python for a more robust patch — sed regexes are fragile across
+    # different Zoology versions where field formatting varies
+    python3 << PYEOF
+import re
+
+with open("${CFG_PY}") as f:
+    content = f.read()
+
+# Match any line defining project_name or entity in LoggerConfig,
+# regardless of type annotation, default value, or whitespace.
+content = re.sub(
+    r'(project_name)\s*[:=][^\n]*',
+    r'project_name: Optional[str] = None',
+    content
+)
+content = re.sub(
+    r'(entity)\s*[:=][^\n]*',
+    r'entity: Optional[str] = None',
+    content
+)
+
+with open("${CFG_PY}", "w") as f:
+    f.write(content)
+PYEOF
+
     PYDANTIC_CHECK=$(python3 -c "
 from zoology.config import LoggerConfig
 lc = LoggerConfig()
@@ -280,6 +415,9 @@ print('ok')
         ok "Patched: pydantic v2 LoggerConfig"
     else
         fail "Could not fix LoggerConfig — check zoology/config.py manually"
+        echo "       Debug: python3 -c 'from zoology.config import LoggerConfig; LoggerConfig()'"
+        python3 -c "from zoology.config import LoggerConfig; LoggerConfig()" 2>&1 | \
+            head -5 | while read -r line; do echo "       ${line}"; done
         exit 1
     fi
 fi
@@ -303,7 +441,6 @@ done
 
 # ── 8. Register mixer directory on sys.path ──────────────────────────────────
 echo "[8/10] Registering mixers on sys.path..."
-# Try system site-packages first; fall back to user site-packages on clusters
 SITE_PKG=$(python3 -c "import site; print(site.getsitepackages()[0])" 2>/dev/null || \
            python3 -c "import site; print(site.getusersitepackages())")
 PTH_FILE="${SITE_PKG}/stp_t_p2.pth"
@@ -311,7 +448,6 @@ if echo "${MIXER_DIR}" > "${PTH_FILE}" 2>/dev/null; then
     ok "Registered: ${MIXER_DIR}"
     ok "  → ${PTH_FILE}"
 else
-    # Fallback: write to user site-packages
     USER_SITE=$(python3 -c "import site; print(site.getusersitepackages())")
     mkdir -p "${USER_SITE}"
     echo "${MIXER_DIR}" > "${USER_SITE}/stp_t_p2.pth"
