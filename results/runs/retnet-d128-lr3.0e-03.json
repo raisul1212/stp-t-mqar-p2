@@ -1,0 +1,200 @@
+{
+  "run_id": "retnet-d128-lr3.0e-03",
+  "model_name": "default",
+  "d_model": 128,
+  "n_layers": 2,
+  "vocab_size": 8192,
+  "num_parameters": 1198080,
+  "learning_rate": 0.003,
+  "max_epochs": 32,
+  "training_time_seconds": 941.3,
+  "best_epoch": 31,
+  "best_valid_accuracy": 0.67873046875,
+  "best_valid_loss": 3.877662420272827,
+  "best_accuracy_by_kv_pairs": {
+    "4": 0.999,
+    "8": 0.997125,
+    "16": 0.9905625,
+    "32": 0.9581875,
+    "64": 0.70140625,
+    "128": 0.1027734375,
+    "256": 0.00205859375
+  },
+  "final_epoch": 31,
+  "final_valid_accuracy": 0.67873046875,
+  "final_valid_loss": 3.877662420272827,
+  "final_accuracy_by_kv_pairs": {
+    "4": 0.999,
+    "8": 0.997125,
+    "16": 0.9905625,
+    "32": 0.9581875,
+    "64": 0.70140625,
+    "128": 0.1027734375,
+    "256": 0.00205859375
+  },
+  "epoch_history": [
+    {
+      "epoch": 0,
+      "valid_accuracy": 0.32510546875,
+      "valid_loss": 7.983615875244141
+    },
+    {
+      "epoch": 1,
+      "valid_accuracy": 0.3420859375,
+      "valid_loss": 9.329718589782715
+    },
+    {
+      "epoch": 2,
+      "valid_accuracy": 0.36409821428571426,
+      "valid_loss": 8.491982460021973
+    },
+    {
+      "epoch": 3,
+      "valid_accuracy": 0.3780122767857143,
+      "valid_loss": 8.835866928100586
+    },
+    {
+      "epoch": 4,
+      "valid_accuracy": 0.39911551339285717,
+      "valid_loss": 7.936314105987549
+    },
+    {
+      "epoch": 5,
+      "valid_accuracy": 0.3772299107142857,
+      "valid_loss": 9.505327224731445
+    },
+    {
+      "epoch": 6,
+      "valid_accuracy": 0.4112265625,
+      "valid_loss": 8.312287330627441
+    },
+    {
+      "epoch": 7,
+      "valid_accuracy": 0.40775446428571427,
+      "valid_loss": 8.685809135437012
+    },
+    {
+      "epoch": 8,
+      "valid_accuracy": 0.40596819196428574,
+      "valid_loss": 8.837690353393555
+    },
+    {
+      "epoch": 9,
+      "valid_accuracy": 0.4086824776785714,
+      "valid_loss": 9.111992835998535
+    },
+    {
+      "epoch": 10,
+      "valid_accuracy": 0.41993526785714286,
+      "valid_loss": 8.524579048156738
+    },
+    {
+      "epoch": 11,
+      "valid_accuracy": 0.4181238839285714,
+      "valid_loss": 8.933094024658203
+    },
+    {
+      "epoch": 12,
+      "valid_accuracy": 0.42011551339285713,
+      "valid_loss": 8.983060836791992
+    },
+    {
+      "epoch": 13,
+      "valid_accuracy": 0.42341015625,
+      "valid_loss": 8.906551361083984
+    },
+    {
+      "epoch": 14,
+      "valid_accuracy": 0.4265496651785714,
+      "valid_loss": 8.934465408325195
+    },
+    {
+      "epoch": 15,
+      "valid_accuracy": 0.42415401785714285,
+      "valid_loss": 9.09705924987793
+    },
+    {
+      "epoch": 16,
+      "valid_accuracy": 0.43355412946428573,
+      "valid_loss": 8.900293350219727
+    },
+    {
+      "epoch": 17,
+      "valid_accuracy": 0.4484581473214286,
+      "valid_loss": 8.238236427307129
+    },
+    {
+      "epoch": 18,
+      "valid_accuracy": 0.43689341517857144,
+      "valid_loss": 8.59522533416748
+    },
+    {
+      "epoch": 19,
+      "valid_accuracy": 0.4439620535714286,
+      "valid_loss": 8.405312538146973
+    },
+    {
+      "epoch": 20,
+      "valid_accuracy": 0.4437896205357143,
+      "valid_loss": 8.610404014587402
+    },
+    {
+      "epoch": 21,
+      "valid_accuracy": 0.44249776785714284,
+      "valid_loss": 8.521167755126953
+    },
+    {
+      "epoch": 22,
+      "valid_accuracy": 0.44511551339285715,
+      "valid_loss": 8.479387283325195
+    },
+    {
+      "epoch": 23,
+      "valid_accuracy": 0.45477176339285713,
+      "valid_loss": 8.03822135925293
+    },
+    {
+      "epoch": 24,
+      "valid_accuracy": 0.4570044642857143,
+      "valid_loss": 7.865062713623047
+    },
+    {
+      "epoch": 25,
+      "valid_accuracy": 0.4831356026785714,
+      "valid_loss": 6.946749210357666
+    },
+    {
+      "epoch": 26,
+      "valid_accuracy": 0.5152767857142857,
+      "valid_loss": 6.0663909912109375
+    },
+    {
+      "epoch": 27,
+      "valid_accuracy": 0.5878895089285714,
+      "valid_loss": 4.767153263092041
+    },
+    {
+      "epoch": 28,
+      "valid_accuracy": 0.6380881696428572,
+      "valid_loss": 4.148500442504883
+    },
+    {
+      "epoch": 29,
+      "valid_accuracy": 0.6677918526785714,
+      "valid_loss": 3.917858600616455
+    },
+    {
+      "epoch": 30,
+      "valid_accuracy": 0.677515625,
+      "valid_loss": 3.8768694400787354
+    },
+    {
+      "epoch": 31,
+      "valid_accuracy": 0.67873046875,
+      "valid_loss": 3.877662420272827
+    }
+  ],
+  "checkpoint_path": "/home/ubuntu/checkpoints/retnet-d128-lr3.0e-03/best.pt",
+  "timestamp": "2026-03-05T00:47:12.776783",
+  "sweep_id": "stp-t-mqar-p2-3d4969"
+}

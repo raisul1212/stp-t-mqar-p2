@@ -4,7 +4,7 @@ __pycache__/
 *.egg-info/
 
 # Results and checkpoints (generated, not committed)
-results/runs/*.json
+#results/runs/*.json
 results/summary.csv
 results/per_kv.csv
 checkpoints/
